@@ -1,94 +1,94 @@
-from .entities.entity import Session,engine,Base
-from .entities.village import Village, VillageSchema
-from .entities.center import Center, CenterSchema
-from flask import Flask, jsonify, request
-from .algorithm import algorithm
-import json
-from flask_cors import CORS
-
-# generate database schema
-Base.metadata.create_all(engine)
-
-# creating the Flask application
+from flask import Flask, jsonify, request, send_from_directory
+from flask import render_template
 app = Flask(__name__)
-CORS(app)
 
-@app.route('/village')
-def get_village():
-    # fetching from the database
-    session = Session()
-    village_objects = session.query(Village).all()
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
 
-    schema = VillageSchema(many=True)
-    villages = schema.dump(village_objects)
+def run(XCOORDINATES, YCOORDINATES, POPULATION, CENTROIDS, MANPOWER):
+    ##CREATE VILLAGE DATAFRAME##
+    VILLAGES = pd.DataFrame({
+        'x': XCOORDINATES,
+        'y': YCOORDINATES,
+    })
 
-    session.close()
-    return jsonify(villages.data)
+    kmeans = KMeans(n_clusters=CENTROIDS)
+    kmeans.fit(VILLAGES)
 
-@app.route('/village', methods=['POST'])
-def add_village():
-    posted_village = VillageSchema(only=('count','latitude','longitude','color_id')).load(request.get_json())
+    labels = kmeans.predict(VILLAGES)  # determines which points are assigned to each centroid
 
-    village = Village(**posted_village.data)
+    VILLAGES['colorID'] = labels
+    VILLAGES['population'] = POPULATION
+    ##VILLAGE DATAFRAME COMPLETE##
 
-    session = Session()
-    session.add(village)
-    session.commit()
+    ##CREATE CENTERS DATAFRAME##
+    centroids = kmeans.cluster_centers_  # returns list containing x-y coordinates (in list) of centroids
 
-    new_village = VillageSchema().dump(village).data
-    session.close()
-    # return jsonify(new_village), 201
-    return request.get_json()
+    centroidx = []
+    centroidy = []
 
-@app.route('/run', methods=['POST'])
-def run_algorithm():
+    for i in range(CENTROIDS):
+        centroidx.append(centroids[i][0])
+        centroidy.append(centroids[i][1])
+
+    CENTERS = pd.DataFrame({
+        'x': centroidx,
+        'y': centroidy,
+        'colorID': list(dict.fromkeys(labels))
+    })
+
+    ##manpower calculations based on population##
+    organizedvillages = []
+    for i in CENTERS['colorID']:
+        cluster = []
+        for j in range(len(VILLAGES)):
+            if VILLAGES['colorID'][j] == i:
+                cluster.append(VILLAGES['population'][j])
+        organizedvillages.append(cluster)
+
+    totalpop = VILLAGES['population'].sum()
+
+    manpower = []
+    for i in range(CENTROIDS):
+        ratio = sum(organizedvillages[i])/totalpop
+        manpower.append(round(ratio*MANPOWER))
+
+    CENTERS['manpower'] = manpower
+
+    ##CENTERS DATAFRAME COMPLETE##
+
+    return [VILLAGES, CENTERS]
+
+@app.route('/<path:path>', methods=['GET'])
+def static_proxy(path):
+  return send_from_directory('./static', path)
+
+@app.route('/')
+def home():
+    return render_template('index.html')
+
+@app.route('/run2', methods=['POST'])
+def run_algorithm2():
     input_json = request.get_json()
+    # data = json.loads(input_json)
+    longitudes = input_json['longitudes']
+    latitudes = input_json['latitudes']
+    populations = input_json['populations']
     center_num = input_json['center_num']
     worker_num = input_json['worker_num']
+    # print("type of data {}".format(type(longitudes[0])))
 
-    session = Session()
-    village_objects = session.query(Village).all()
 
-    schema = VillageSchema(many=True)
-    villages = schema.dump(village_objects)
+    # center_num = 1
+    # worker_num = 1
+    # latitudes = [9,8,7,6,5,4,3,2,1]
+    # longitudes = [1,2,3,4,5,6,7,8,9]
+    # populations = [12,21,34,54,67,32,10,67,34]
 
-    
-
-    latitudes = [9,8,7,6,5,4,3,2,1]
-    longitudes = [1,2,3,4,5,6,7,8,9]
-    populations = [12,21,34,54,67,32,10,67,34]
-    # for vil in villages.data:
-    #     latitudes.append(vil['latitude'])
-    #     longitudes.append(vil['longitude'])
-    #     populations.append(vil['count'])
-    
-    algo = algorithm.run(longitudes,latitudes,populations, center_num,worker_num)
-
-    proc_villages = algo[0]
+    algo = run(longitudes,latitudes,populations, center_num,worker_num)
     proc_centers = algo[1]
-
-    # proc_villages_colorId = proc_villages['colorID']
-    # for i in range(len(proc_villages_colorId)):
-    #     village_objects[i].color_id = proc_villages_colorId[i]
-    
     data = proc_centers.to_dict('records')
-    for d in data:
-        center_load = CenterSchema(only=('x','y','colorID','manpower')).load(d)
-        center = Center(**center_load.data)
-        session.add(center)
-
-    session.commit()
-    session.close()
-
     return jsonify(data)
 
-@app.route('/get_center')
-def get_center():
-    session = Session()
-    center_objects = session.query(Center).all()
-    schema = CenterSchema(many=True)
-    centers = schema.dump(center_objects)
-
-    session.close()
-
-    return jsonify(centers.data)
